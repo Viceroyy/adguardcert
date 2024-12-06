@@ -20,6 +20,11 @@ set_context() {
     fi
 }
 
+# Wait for the zygote64 process to start
+while [ -z "$(pidof zygote64)" ]; do
+    sleep 1
+done
+
 # Android hashes the subject to get the filename, field order is significant.
 # (`openssl x509 -in ... -noout -hash`)
 # AdGuard's certificate is "/C=EN/O=AdGuard/CN=AdGuard Personal CA".
