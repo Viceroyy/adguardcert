@@ -53,30 +53,47 @@ chown -R 0:0 ${MODDIR}/system/etc/security/cacerts
 set_context /system/etc/security/cacerts ${MODDIR}/system/etc/security/cacerts
 
 # Android 14 support
-# Since Magisk ignore /apex for module file injections, use non-Magisk way
+# Since Magisk ignores /apex for module file injections, use a non-Magisk way
 if [ -d /apex/com.android.conscrypt/cacerts ]; then
-    # Clone directory into tmpfs
-    rm -f /data/local/tmp/adg-ca-copy
-    mkdir -p /data/local/tmp/adg-ca-copy
-    mount -t tmpfs tmpfs /data/local/tmp/adg-ca-copy
-    cp -f /apex/com.android.conscrypt/cacerts/* /data/local/tmp/adg-ca-copy/
+    # Define a temporary directory for handling certificates
+    TEMP_DIR=/data/local/tmp/adg-ca-copy
 
-    # Do the same as in Magisk module
-    cp -f ${AG_CERT_FILE} /data/local/tmp/adg-ca-copy/${AG_CERT_HASH}.0
-    chown -R 0:0 /data/local/tmp/adg-ca-copy
-    set_context /apex/com.android.conscrypt/cacerts /data/local/tmp/adg-ca-copy
+    # Ensure the temporary directory is clean before use
+    # Changed from `rm -f` to `rm -rf` to handle potential directory remnants
+    rm -rf $TEMP_DIR
+    mkdir -p $TEMP_DIR
 
-    # Mount directory inside APEX if it is valid, and remove temporary one.
-    CERTS_NUM="$(ls -1 /data/local/tmp/adg-ca-copy | wc -l)"
+    # Clone the APEX CA directory into tmpfs to allow modifications
+    mount -t tmpfs tmpfs $TEMP_DIR
+    cp -f /apex/com.android.conscrypt/cacerts/* $TEMP_DIR/
+
+    # Add the AdGuard certificate to the temporary directory
+    cp -f ${AG_CERT_FILE} $TEMP_DIR/${AG_CERT_HASH}.0
+    chown -R 0:0 $TEMP_DIR
+
+    # Apply SELinux context to the temporary directory
+    set_context /apex/com.android.conscrypt/cacerts $TEMP_DIR
+
+    # Count the number of certificates in the temporary directory
+    CERTS_NUM="$(ls -1 $TEMP_DIR | wc -l)"
     if [ "$CERTS_NUM" -gt 10 ]; then
-        mount --bind /data/local/tmp/adg-ca-copy /apex/com.android.conscrypt/cacerts
+        # If valid, replace the APEX CA directory with the temporary one
+        mount --bind $TEMP_DIR /apex/com.android.conscrypt/cacerts
         for pid in 1 $(pgrep zygote) $(pgrep zygote64); do
+            # Apply the mount to all necessary namespaces
             nsenter --mount=/proc/${pid}/ns/mnt -- \
-                /bin/mount --bind /data/local/tmp/adg-ca-copy /apex/com.android.conscrypt/cacerts
+                /bin/mount --bind $TEMP_DIR /apex/com.android.conscrypt/cacerts
         done
     else
+        # Safety check: Abort if the certificate count is suspiciously low
         echo "Cancelling replacing CA storage due to safety"
     fi
-    umount /data/local/tmp/adg-ca-copy
-    rmdir /data/local/tmp/adg-ca-copy
+
+    # Ensure the temporary directory is unmounted and cleaned up properly
+    # Added a loop to handle cases where unmounting may be delayed
+    while ! umount $TEMP_DIR; do
+        echo "Temporary storage still in use. Retrying unmount..."
+        sleep 1
+    done
+    rmdir $TEMP_DIR
 fi
